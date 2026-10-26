@@ -1,8 +1,10 @@
 
 package com.chaitanya.email_sender.controller;
 
-import com.chaitanya.email_sender.Service.EmailService;
+import com.chaitanya.email_sender.Service.EmailJobService;
 import com.chaitanya.email_sender.Service.ExcelService;
+import com.chaitanya.email_sender.model.EmailJob;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -17,13 +19,13 @@ import java.util.Map;
 public class EmailController {
 
     private final ExcelService excelService;
-    private final EmailService emailService;
+    private final EmailJobService emailJobService;
 
     public EmailController(
             ExcelService excelService,
-            EmailService emailService) {
+            EmailJobService emailJobService) {
         this.excelService = excelService;
-        this.emailService = emailService;
+        this.emailJobService = emailJobService;
     }
 
     @PostMapping("/upload")
@@ -37,51 +39,79 @@ public class EmailController {
         try {
             if (file.isEmpty()) {
                 return ResponseEntity.badRequest()
-                        .body("Please upload an Excel file.");
+                        .body(Map.of("message",
+                                "Please upload an Excel file."));
             }
 
             List<String> emails = excelService.emails(file);
 
             if (emails.isEmpty()) {
                 return ResponseEntity.badRequest()
-                        .body("No email addresses found in Excel.");
+                        .body(Map.of("message",
+                                "No email addresses found in Excel."));
             }
 
+            // Copy attachments before the HTTP request ends.
+            List<byte[]> attachmentContents = new ArrayList<>();
+            List<String> attachmentNames = new ArrayList<>();
 
-            List<Map<String, String>> results = new ArrayList<>();
+            if (attachments != null) {
+                for (MultipartFile attachment : attachments) {
+                    if (attachment != null && !attachment.isEmpty()) {
+                        attachmentContents.add(attachment.getBytes());
 
-            for (String email : emails) {
-                try {
-                    emailService.sendEmail(email, subject, body, attachments);
-
-                    results.add(Map.of(
-                            "email", email,
-                            "status", "SENT",
-                            "message", "Accepted by server"
-                    ));
-
-                } catch (Exception e) {
-                    results.add(Map.of(
-                            "email", email,
-                            "status", "FAILED",
-                            "message", "Sending failed"
-                    ));
+                        String name = attachment.getOriginalFilename();
+                        attachmentNames.add(
+                                name == null || name.isBlank()
+                                        ? "attachment"
+                                        : name
+                        );
+                    }
                 }
             }
-            return ResponseEntity.ok(Map.of(
-                    "total", results.size(),
-                    "sent", results.stream()
-                            .filter(r -> r.get("status").equals("SENT")).count(),
-                    "failed", results.stream()
-                            .filter(r -> r.get("status").equals("FAILED")).count(),
-                    "results", results
+
+            EmailJob job = emailJobService.startJob(
+                    emails,
+                    subject,
+                    body,
+                    attachmentContents,
+                    attachmentNames
+            );
+
+            return ResponseEntity.accepted().body(Map.of(
+                    "jobId", job.getJobId(),
+                    "status", job.getStatus(),
+                    "total", job.getTotal(),
+                    "message", "Email job started successfully."
             ));
 
-
         } catch (Exception e) {
-            e.printStackTrace();
             return ResponseEntity.internalServerError()
-                    .body("Email sending or Excel processing failed.");
+                    .body(Map.of(
+                            "message",
+                            "Email upload or job creation failed."
+                    ));
         }
+    }
+
+    @GetMapping("/status/{jobId}")
+    public ResponseEntity<?> getJobStatus(
+            @PathVariable String jobId) {
+
+        EmailJob job = emailJobService.getJob(jobId);
+
+        if (job == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        return ResponseEntity.ok(Map.of(
+                "jobId", job.getJobId(),
+                "status", job.getStatus(),
+                "total", job.getTotal(),
+                "processed", job.getProcessed(),
+                "sent", job.getSent(),
+                "failed", job.getFailed(),
+                "results", job.getResults()
+        ));
     }
 }
